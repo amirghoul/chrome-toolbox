@@ -96,7 +96,7 @@ function ensureHlsClassified(tabId, frameId, url) {
       console.log(LOG, `classification HLS OK (${result.master ? "master" : "media"}) :`, url);
     })
     .catch((e) => {
-      console.warn(LOG, "classification HLS échouée :", url, "-", e.message);
+      console.log(LOG, "ERREUR classification HLS échouée :", url, "-", e.message);
       const item = getTabEntry(tabId).hls.get(url);
       if (item) item.master = false;
     });

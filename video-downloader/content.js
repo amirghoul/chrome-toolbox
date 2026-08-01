@@ -15,7 +15,7 @@ function captureThumbnail(video) {
     canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", 0.6);
   } catch (e) {
-    console.warn(LOG, "capture miniature échouée (probablement CORS)", e.message);
+    console.log(LOG, "ERREUR capture miniature échouée (probablement CORS)", e.message);
     return null;
   }
 }
@@ -59,7 +59,7 @@ function collectVideos() {
     chrome.runtime
       .sendMessage({ type: "FOUND_VIDEOS", videos: found, title: document.title, poster: pagePoster })
       .then(() => console.log(LOG, "envoyé au background :", found))
-      .catch((e) => console.warn(LOG, "échec sendMessage (service worker inactif ?)", e));
+      .catch((e) => console.log(LOG, "ERREUR échec sendMessage (service worker inactif ?)", e));
   }
 }
 
@@ -87,10 +87,10 @@ async function fetchOk(url, label) {
     return res;
   } catch (e) {
     if (e.name === "AbortError") {
-      console.error(LOG, `fetch ✗ ${label || ""} TIMEOUT après ${FETCH_TIMEOUT_MS}ms`, url);
+      console.log(LOG, `ERREUR fetch ✗ ${label || ""} TIMEOUT après ${FETCH_TIMEOUT_MS}ms`, url);
       throw new Error(`timeout après ${FETCH_TIMEOUT_MS / 1000}s`);
     }
-    console.error(LOG, `fetch ✗ ${label || ""} ${e.message}`, url);
+    console.log(LOG, `ERREUR fetch ✗ ${label || ""} ${e.message}`, url);
     throw e;
   } finally {
     clearTimeout(timeoutId);
@@ -167,7 +167,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true });
       })
       .catch((e) => {
-        console.warn(LOG, "téléchargement HLS échoué dans la frame :", e.message);
+        console.log(LOG, "ERREUR téléchargement HLS échoué dans la frame :", e.message, e);
         sendResponse({ error: e.message });
       });
     return true;

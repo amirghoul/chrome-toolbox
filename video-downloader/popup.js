@@ -1,6 +1,6 @@
 const LOG = "[VD]";
 console.log(LOG, "popup ouvert");
-window.addEventListener("error", (e) => console.error(LOG, "erreur non catchée dans le popup :", e.message, e.error));
+window.addEventListener("error", (e) => console.log(LOG, "ERREUR non catchée dans le popup :", e.message, e.error));
 
 const listEl = document.getElementById("list");
 const statusEl = document.getElementById("status");
@@ -104,7 +104,7 @@ function render(tab, data) {
         try {
           const variant = variants[Number(card.select.value)];
           if (!variant) {
-            console.error(LOG, "aucun variant trouvé pour l'index", card.select.value);
+            console.log(LOG, "ERREUR aucun variant trouvé pour l'index", card.select.value);
             card.btn.textContent = "Erreur";
             return;
           }
@@ -121,7 +121,7 @@ function render(tab, data) {
             card.btn.disabled = !failed;
           });
         } catch (e) {
-          console.error(LOG, "exception dans le clic Télécharger :", e);
+          console.log(LOG, "ERREUR exception dans le clic Télécharger :", e);
           card.btn.textContent = "Erreur";
         }
       });
