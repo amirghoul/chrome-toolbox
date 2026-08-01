@@ -77,11 +77,11 @@ function render(tab, data) {
 
   data.direct.forEach((v) => {
     const ext = (v.url.split("?")[0].match(/\.([a-z0-9]+)$/i) || [, "mp4"])[1].toLowerCase();
-    const card = buildCard({ thumbnail: v.thumbnail || data.poster, badge: ext.toUpperCase(), title: `${host}.${ext}` });
+    const filename = `${sanitize(pageName)}.${ext}`;
+    const card = buildCard({ thumbnail: v.thumbnail || data.poster, badge: ext.toUpperCase(), title: filename });
     card.meta.textContent = formatSize(v.size);
     card.btn.addEventListener("click", () => {
       card.btn.disabled = true;
-      const filename = `${sanitize(pageName)}.${ext}`;
       chrome.runtime.sendMessage({ type: "DOWNLOAD_DIRECT", url: v.url, filename }, (res) => {
         const failed = !res || res.error;
         card.btn.textContent = failed ? "Erreur" : "OK";
@@ -92,7 +92,8 @@ function render(tab, data) {
   });
 
   data.hls.forEach((v) => {
-    const card = buildCard({ thumbnail: v.thumbnail || data.poster, badge: "HLS", title: `${host}.ts` });
+    const filename = `${sanitize(pageName)}.ts`;
+    const card = buildCard({ thumbnail: v.thumbnail || data.poster, badge: "HLS", title: filename });
     listEl.appendChild(card.root);
 
     const useVariants = (variants) => {
@@ -117,7 +118,6 @@ function render(tab, data) {
           card.btn.disabled = true;
           card.btn.textContent = "...";
           downloadUrlByBtn.set(card.btn, variant.url);
-          const filename = `${sanitize(pageName)}.ts`;
           const msg = { type: "DOWNLOAD_HLS", url: variant.url, filename, tabId: tab.id, frameId: v.frameId };
           console.log(LOG, "envoi DOWNLOAD_HLS :", msg);
           chrome.runtime.sendMessage(msg, (res) => {
