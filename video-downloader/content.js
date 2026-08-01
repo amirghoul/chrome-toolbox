@@ -109,13 +109,18 @@ async function downloadHlsInThisFrame(variantUrl) {
   }
   await Promise.all(Array.from({ length: Math.min(HLS_FRAME_FETCH_CONCURRENCY, segmentUrls.length) }, worker));
 
-  const blob = new Blob(parts, { type: "video/mp2t" });
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("conversion en data URL échouée"));
-    reader.readAsDataURL(blob);
-  });
+  return new Blob(parts, { type: "video/mp2t" });
+}
+
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -129,7 +134,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "DOWNLOAD_HLS_IN_FRAME") {
     console.log(LOG, "téléchargement HLS depuis cette frame :", message.url);
     downloadHlsInThisFrame(message.url)
-      .then((dataUrl) => sendResponse({ dataUrl }))
+      .then((blob) => {
+        console.log(LOG, `blob assemblé (${(blob.size / 1024 / 1024).toFixed(1)} Mo), déclenchement du téléchargement`);
+        triggerBlobDownload(blob, message.filename);
+        sendResponse({ ok: true });
+      })
       .catch((e) => {
         console.warn(LOG, "téléchargement HLS échoué dans la frame :", e.message);
         sendResponse({ error: e.message });

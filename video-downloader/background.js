@@ -188,16 +188,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     case "DOWNLOAD_HLS": {
-      sendToFrame(message.tabId, message.frameId, { type: "DOWNLOAD_HLS_IN_FRAME", url: message.url })
-        .then(({ dataUrl }) => {
-          chrome.downloads.download({ url: dataUrl, filename: message.filename }, (downloadId) => {
-            if (chrome.runtime.lastError || !downloadId) {
-              sendResponse({ error: chrome.runtime.lastError?.message || "téléchargement échoué" });
-              return;
-            }
-            sendResponse({ ok: true });
-          });
-        })
+      // The blob is assembled and downloaded from inside the content script's
+      // frame directly (see content.js) — a service-worker round trip can't
+      // carry a whole video through chrome.runtime messaging reliably.
+      sendToFrame(message.tabId, message.frameId, {
+        type: "DOWNLOAD_HLS_IN_FRAME",
+        url: message.url,
+        filename: message.filename,
+      })
+        .then(() => sendResponse({ ok: true }))
         .catch((e) => sendResponse({ error: e.message }));
       return true;
     }
