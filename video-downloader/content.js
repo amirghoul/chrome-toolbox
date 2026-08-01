@@ -73,17 +73,38 @@ function scheduleCollect() {
   }, 500);
 }
 
-async function fetchOk(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res;
+const FETCH_TIMEOUT_MS = 15000;
+
+async function fetchOk(url, label) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const t0 = performance.now();
+  console.log(LOG, `fetch → ${label || ""}`, url);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    console.log(LOG, `fetch ← ${label || ""} HTTP ${res.status} en ${Math.round(performance.now() - t0)}ms`, url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res;
+  } catch (e) {
+    if (e.name === "AbortError") {
+      console.error(LOG, `fetch ✗ ${label || ""} TIMEOUT après ${FETCH_TIMEOUT_MS}ms`, url);
+      throw new Error(`timeout après ${FETCH_TIMEOUT_MS / 1000}s`);
+    }
+    console.error(LOG, `fetch ✗ ${label || ""} ${e.message}`, url);
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 const HLS_FRAME_FETCH_CONCURRENCY = 5;
 
 async function downloadHlsInThisFrame(variantUrl) {
-  const res = await fetchOk(variantUrl);
+  console.log(LOG, "downloadHlsInThisFrame: étape 1/4 — récupération de la playlist");
+  const res = await fetchOk(variantUrl, "playlist");
   const text = await res.text();
+  console.log(LOG, `downloadHlsInThisFrame: playlist reçue (${text.length} caractères)`);
+
   if (/#EXT-X-KEY/.test(text) && !/METHOD=NONE/.test(text)) {
     throw new Error("flux chiffré non supporté");
   }
@@ -93,22 +114,27 @@ async function downloadHlsInThisFrame(variantUrl) {
     .filter((l) => l && !l.startsWith("#"))
     .map((l) => new URL(l, variantUrl).href);
 
+  console.log(LOG, `downloadHlsInThisFrame: étape 2/4 — ${segmentUrls.length} segment(s) à télécharger, premier :`, segmentUrls[0]);
   if (!segmentUrls.length) throw new Error("aucun segment trouvé");
 
   const parts = new Array(segmentUrls.length);
   let nextIndex = 0;
   let completed = 0;
-  async function worker() {
+  async function worker(workerId) {
     while (nextIndex < segmentUrls.length) {
       const i = nextIndex++;
-      const r = await fetchOk(segmentUrls[i]);
-      parts[i] = await r.arrayBuffer();
+      const r = await fetchOk(segmentUrls[i], `worker${workerId} segment ${i + 1}/${segmentUrls.length}`);
+      const buf = await r.arrayBuffer();
+      parts[i] = buf;
       completed++;
+      console.log(LOG, `downloadHlsInThisFrame: segment ${i + 1}/${segmentUrls.length} OK (${(buf.byteLength / 1024).toFixed(0)} Ko)`);
       chrome.runtime.sendMessage({ type: "HLS_PROGRESS", url: variantUrl, done: completed, total: segmentUrls.length }).catch(() => {});
     }
   }
-  await Promise.all(Array.from({ length: Math.min(HLS_FRAME_FETCH_CONCURRENCY, segmentUrls.length) }, worker));
+  console.log(LOG, "downloadHlsInThisFrame: étape 3/4 — démarrage des téléchargements de segments");
+  await Promise.all(Array.from({ length: Math.min(HLS_FRAME_FETCH_CONCURRENCY, segmentUrls.length) }, (_, idx) => worker(idx)));
 
+  console.log(LOG, "downloadHlsInThisFrame: étape 4/4 — assemblage du blob");
   return new Blob(parts, { type: "video/mp2t" });
 }
 
@@ -126,7 +152,7 @@ function triggerBlobDownload(blob, filename) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log(LOG, `message reçu "${message.type}" dans cette frame (${location.href})`, message);
   if (message.type === "FETCH_TEXT_IN_FRAME") {
-    fetchOk(message.url)
+    fetchOk(message.url, "classification")
       .then((res) => res.text())
       .then((text) => sendResponse({ text }))
       .catch((e) => sendResponse({ error: e.message }));
