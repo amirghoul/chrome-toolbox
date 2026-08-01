@@ -15,11 +15,12 @@ Détecte les vidéos présentes sur une page (fichiers directs mp4/webm et flux 
 - Chaque manifest HLS détecté est analysé dès sa découverte ; seules les playlists "master" (qui listent toutes les qualités) sont affichées dans le popup, pour éviter d'afficher séparément chaque piste/qualité individuelle.
 - La lecture des manifests et le téléchargement des segments (5 en parallèle) se font **depuis le content script, dans la frame qui a chargé la vidéo** (pas depuis le service worker) : beaucoup de CDN vidéo protègent leurs URLs signées par un contrôle du `Referer`/cookies qu'un `fetch()` fait depuis le service worker ne peut pas reproduire correctement. Exécuter la requête dans la vraie frame du lecteur la rend indiscernable d'une requête normale du lecteur.
 - Le fichier assemblé (`Blob`) est téléchargé **directement depuis cette frame** via un `<a download>` synthétique, sans jamais transiter par le service worker — `chrome.runtime.sendMessage` a une limite de taille qui rend le transfert d'une vidéo entière (encodée en base64) peu fiable.
+- Les segments chiffrés en AES-128 (`#EXT-X-KEY:METHOD=AES-128`, courant sur les plateformes de cours type Hotmart) sont déchiffrés à la volée via l'API Web Crypto : la clé est récupérée une fois (et mise en cache) depuis l'URI du tag, l'IV vient du tag ou par défaut du numéro de séquence du segment (RFC 8216 §5.2).
 
 ## Limitations connues (v1)
 
 - Pas de support DASH (`.mpd`).
-- Pas de support des flux HLS chiffrés (`#EXT-X-KEY`).
+- Pas de support de `SAMPLE-AES` (chiffrement HLS pour segments fMP4) ni d'autres méthodes que `AES-128`.
 - Les segments HLS sont assemblés entièrement en mémoire (dans l'onglet) avant le téléchargement — peut être lourd sur de très longues vidéos.
 - Si une page n'expose aucune playlist HLS "master" (rare, streams à qualité unique), les playlists individuelles détectées sont affichées telles quelles.
 - Si un CDN protège aussi via l'IP ou un cookie non accessible à l'extension, le téléchargement peut encore échouer (HTTP 401/403) malgré le relais par frame.

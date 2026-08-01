@@ -99,40 +99,123 @@ async function fetchOk(url, label) {
 
 const HLS_FRAME_FETCH_CONCURRENCY = 5;
 
+function parseAttributeList(str) {
+  const attrs = {};
+  const re = /([A-Z0-9-]+)=("[^"]*"|[^,]*)/g;
+  let m;
+  while ((m = re.exec(str))) {
+    let val = m[2];
+    if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+    attrs[m[1]] = val;
+  }
+  return attrs;
+}
+
+function hexToBytes(hex) {
+  const clean = hex.replace(/^0x/i, "");
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+  return bytes;
+}
+
+function sequenceToIv(seq) {
+  const bytes = new Uint8Array(16);
+  new DataView(bytes.buffer).setUint32(12, seq >>> 0, false);
+  return bytes;
+}
+
+// #EXT-X-KEY applies to every segment that follows until a new one appears.
+// IV defaults to the segment's media sequence number when not given explicitly (RFC 8216 §5.2).
+function parseSegments(text, baseUrl) {
+  let mediaSequence = 0;
+  let currentKey = null;
+  const segments = [];
+  let segIndex = 0;
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
+      mediaSequence = parseInt(line.split(":")[1], 10) || 0;
+      continue;
+    }
+    if (line.startsWith("#EXT-X-KEY:")) {
+      const attrs = parseAttributeList(line.slice("#EXT-X-KEY:".length));
+      currentKey = !attrs.METHOD || attrs.METHOD === "NONE" ? null : { method: attrs.METHOD, uri: attrs.URI, iv: attrs.IV };
+      continue;
+    }
+    if (line.startsWith("#")) continue;
+
+    const seq = mediaSequence + segIndex;
+    segIndex++;
+    segments.push({
+      url: new URL(line, baseUrl).href,
+      key: currentKey
+        ? {
+            method: currentKey.method,
+            uri: new URL(currentKey.uri, baseUrl).href,
+            iv: currentKey.iv ? hexToBytes(currentKey.iv) : sequenceToIv(seq),
+          }
+        : null,
+    });
+  }
+  return segments;
+}
+
+const aesKeyCache = new Map();
+
+function getAesKey(uri) {
+  if (!aesKeyCache.has(uri)) {
+    aesKeyCache.set(
+      uri,
+      fetchOk(uri, "clé AES")
+        .then((res) => res.arrayBuffer())
+        .then((raw) => crypto.subtle.importKey("raw", raw, { name: "AES-CBC" }, false, ["decrypt"]))
+    );
+  }
+  return aesKeyCache.get(uri);
+}
+
+async function decryptSegment(buf, keyInfo) {
+  if (!keyInfo) return buf;
+  if (keyInfo.method !== "AES-128") {
+    throw new Error(`méthode de chiffrement non supportée : ${keyInfo.method}`);
+  }
+  const cryptoKey = await getAesKey(keyInfo.uri);
+  return crypto.subtle.decrypt({ name: "AES-CBC", iv: keyInfo.iv }, cryptoKey, buf);
+}
+
 async function downloadHlsInThisFrame(variantUrl) {
   console.log(LOG, "downloadHlsInThisFrame: étape 1/4 — récupération de la playlist");
   const res = await fetchOk(variantUrl, "playlist");
   const text = await res.text();
   console.log(LOG, `downloadHlsInThisFrame: playlist reçue (${text.length} caractères)`);
 
-  if (/#EXT-X-KEY/.test(text) && !/METHOD=NONE/.test(text)) {
-    throw new Error("flux chiffré non supporté");
-  }
-  const segmentUrls = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("#"))
-    .map((l) => new URL(l, variantUrl).href);
+  const segments = parseSegments(text, variantUrl);
+  console.log(
+    LOG,
+    `downloadHlsInThisFrame: étape 2/4 — ${segments.length} segment(s), chiffrement=${segments[0]?.key?.method || "aucun"}`
+  );
+  if (!segments.length) throw new Error("aucun segment trouvé");
 
-  console.log(LOG, `downloadHlsInThisFrame: étape 2/4 — ${segmentUrls.length} segment(s) à télécharger, premier :`, segmentUrls[0]);
-  if (!segmentUrls.length) throw new Error("aucun segment trouvé");
-
-  const parts = new Array(segmentUrls.length);
+  const parts = new Array(segments.length);
   let nextIndex = 0;
   let completed = 0;
   async function worker(workerId) {
-    while (nextIndex < segmentUrls.length) {
+    while (nextIndex < segments.length) {
       const i = nextIndex++;
-      const r = await fetchOk(segmentUrls[i], `worker${workerId} segment ${i + 1}/${segmentUrls.length}`);
-      const buf = await r.arrayBuffer();
-      parts[i] = buf;
+      const seg = segments[i];
+      const r = await fetchOk(seg.url, `worker${workerId} segment ${i + 1}/${segments.length}`);
+      const raw = await r.arrayBuffer();
+      parts[i] = await decryptSegment(raw, seg.key);
       completed++;
-      console.log(LOG, `downloadHlsInThisFrame: segment ${i + 1}/${segmentUrls.length} OK (${(buf.byteLength / 1024).toFixed(0)} Ko)`);
-      chrome.runtime.sendMessage({ type: "HLS_PROGRESS", url: variantUrl, done: completed, total: segmentUrls.length }).catch(() => {});
+      console.log(LOG, `downloadHlsInThisFrame: segment ${i + 1}/${segments.length} OK (${(parts[i].byteLength / 1024).toFixed(0)} Ko)`);
+      chrome.runtime.sendMessage({ type: "HLS_PROGRESS", url: variantUrl, done: completed, total: segments.length }).catch(() => {});
     }
   }
   console.log(LOG, "downloadHlsInThisFrame: étape 3/4 — démarrage des téléchargements de segments");
-  await Promise.all(Array.from({ length: Math.min(HLS_FRAME_FETCH_CONCURRENCY, segmentUrls.length) }, (_, idx) => worker(idx)));
+  await Promise.all(Array.from({ length: Math.min(HLS_FRAME_FETCH_CONCURRENCY, segments.length) }, (_, idx) => worker(idx)));
 
   console.log(LOG, "downloadHlsInThisFrame: étape 4/4 — assemblage du blob");
   return new Blob(parts, { type: "video/mp2t" });
