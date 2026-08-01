@@ -1,9 +1,10 @@
 const tabData = new Map();
-const DIRECT_EXT = new Set(["mp4", "webm", "mov", "m4v", "ogg", "ogv"]);
+const DIRECT_EXT = new Set(["mp4", "webm", "mov", "m4v", "ogv"]);
+const DIRECT_CONTENT_TYPES = ["video/mp4", "video/webm", "video/quicktime", "video/x-m4v"];
 
 function getTabEntry(tabId) {
   if (!tabData.has(tabId)) {
-    tabData.set(tabId, { direct: new Map(), hls: new Map(), title: "" });
+    tabData.set(tabId, { direct: new Map(), hls: new Map(), title: "", poster: null });
   }
   return tabData.get(tabId);
 }
@@ -18,13 +19,33 @@ function classify(url, contentType) {
   const ext = extFromUrl(url);
   const ct = (contentType || "").toLowerCase();
   if (ext === "m3u8" || ct.includes("mpegurl")) return "hls";
-  if (DIRECT_EXT.has(ext) || ct.startsWith("video/")) return "direct";
+  if (ext === "ts" || ct.includes("mp2t")) return null;
+  if (DIRECT_EXT.has(ext) || DIRECT_CONTENT_TYPES.some((t) => ct.startsWith(t))) return "direct";
   return null;
+}
+
+const hlsClassifying = new Set();
+
+function ensureHlsClassified(tabId, url) {
+  const key = `${tabId}:${url}`;
+  if (hlsClassifying.has(key)) return;
+  hlsClassifying.add(key);
+  parseHlsPlaylist(url)
+    .then((result) => {
+      const item = getTabEntry(tabId).hls.get(url);
+      if (!item) return;
+      item.master = !!result.master;
+      if (result.master) item.variants = result.variants;
+    })
+    .catch(() => {
+      const item = getTabEntry(tabId).hls.get(url);
+      if (item) item.master = false;
+    });
 }
 
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId === 0) {
-    tabData.set(details.tabId, { direct: new Map(), hls: new Map(), title: "" });
+    tabData.set(details.tabId, { direct: new Map(), hls: new Map(), title: "", poster: null });
   }
 });
 
@@ -40,12 +61,15 @@ chrome.webRequest.onHeadersReceived.addListener(
     if (!kind) return;
     const entry = getTabEntry(details.tabId);
     if (kind === "direct") {
-      entry.direct.set(details.url, {
-        url: details.url,
-        size: contentLength ? parseInt(contentLength, 10) : null,
-      });
-    } else {
-      entry.hls.set(details.url, { url: details.url });
+      if (!entry.direct.has(details.url)) {
+        entry.direct.set(details.url, {
+          url: details.url,
+          size: contentLength ? parseInt(contentLength, 10) : null,
+        });
+      }
+    } else if (!entry.hls.has(details.url)) {
+      entry.hls.set(details.url, { url: details.url, master: null, variants: null });
+      ensureHlsClassified(details.tabId, details.url);
     }
   },
   { urls: ["<all_urls>"] },
@@ -128,18 +152,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (tabId == null) return;
       const entry = getTabEntry(tabId);
       if (message.title) entry.title = message.title;
+      if (message.poster && !entry.poster) entry.poster = message.poster;
       message.videos.forEach((v) => {
-        if (v.kind === "hls") entry.hls.set(v.url, { url: v.url });
-        else entry.direct.set(v.url, { url: v.url, size: null });
+        if (v.kind === "hls") {
+          const existing = entry.hls.get(v.url) || { url: v.url, master: null, variants: null };
+          if (v.thumbnail) existing.thumbnail = v.thumbnail;
+          entry.hls.set(v.url, existing);
+          if (existing.master === null) ensureHlsClassified(tabId, v.url);
+        } else {
+          const existing = entry.direct.get(v.url) || { url: v.url, size: null };
+          if (v.thumbnail) existing.thumbnail = v.thumbnail;
+          entry.direct.set(v.url, existing);
+        }
       });
       return;
     }
     case "GET_VIDEOS": {
       const entry = getTabEntry(message.tabId);
+      const hlsList = Array.from(entry.hls.values());
+      const masters = hlsList.filter((e) => e.master === true);
+      const hls = masters.length ? masters : hlsList.filter((e) => e.master !== false);
       sendResponse({
         title: entry.title,
+        poster: entry.poster,
         direct: Array.from(entry.direct.values()),
-        hls: Array.from(entry.hls.values()),
+        hls,
       });
       return true;
     }

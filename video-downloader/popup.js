@@ -1,5 +1,12 @@
 const listEl = document.getElementById("list");
 const statusEl = document.getElementById("status");
+const downloadUrlByBtn = new WeakMap();
+
+const PLACEHOLDER_THUMB =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="8" fill="#e5e7eb"/><polygon points="26,20 26,44 46,32" fill="#9ca3af"/></svg>'
+  );
 
 function sanitize(name) {
   return (name || "video").replace(/[\\/:*?"<>|]+/g, "_").slice(0, 80);
@@ -11,94 +18,112 @@ function formatSize(bytes) {
   return mb >= 1 ? `${mb.toFixed(1)} Mo` : `${(bytes / 1024).toFixed(0)} Ko`;
 }
 
+function hostname(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "video";
+  }
+}
+
+function buildCard({ thumbnail, badge, title }) {
+  const root = document.createElement("div");
+  root.className = "item";
+  root.innerHTML = `
+    <img class="thumb" src="${thumbnail || PLACEHOLDER_THUMB}" />
+    <div class="info">
+      <span class="badge">${badge}</span>
+      <div class="title" title="${title}">${title}</div>
+      <select class="quality-select" hidden></select>
+      <div class="item-meta"></div>
+    </div>
+    <button class="download-btn">Télécharger</button>
+  `;
+  root.querySelector(".thumb").onerror = function () {
+    this.src = PLACEHOLDER_THUMB;
+  };
+  return {
+    root,
+    select: root.querySelector(".quality-select"),
+    meta: root.querySelector(".item-meta"),
+    btn: root.querySelector(".download-btn"),
+  };
+}
+
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  chrome.runtime.sendMessage({ type: "GET_VIDEOS", tabId: tab.id }, (data) => {
-    render(tab, data);
-  });
+  chrome.runtime.sendMessage({ type: "GET_VIDEOS", tabId: tab.id }, (data) => render(tab, data));
 }
 
 function render(tab, data) {
   listEl.innerHTML = "";
   const total = data.direct.length + data.hls.length;
   statusEl.textContent = total ? `${total} vidéo(s) détectée(s)` : "Aucune vidéo détectée sur cette page";
+  const host = hostname(tab.url);
 
   data.direct.forEach((v) => {
-    const item = document.createElement("div");
-    item.className = "item";
-    const ext = (v.url.split("?")[0].match(/\.([a-z0-9]+)$/i) || [, "mp4"])[1];
-    item.innerHTML = `
-      <div class="item-info">
-        <span class="item-title">Fichier direct</span>
-        <span class="item-meta">${formatSize(v.size)}</span>
-      </div>
-    `;
-    const btn = document.createElement("button");
-    btn.className = "download-btn";
-    btn.textContent = "Télécharger";
-    btn.addEventListener("click", () => {
-      btn.disabled = true;
-      const filename = `${sanitize(data.title || tab.title)}.${ext}`;
+    const ext = (v.url.split("?")[0].match(/\.([a-z0-9]+)$/i) || [, "mp4"])[1].toLowerCase();
+    const card = buildCard({ thumbnail: v.thumbnail || data.poster, badge: ext.toUpperCase(), title: `${host}.${ext}` });
+    card.meta.textContent = formatSize(v.size);
+    card.btn.addEventListener("click", () => {
+      card.btn.disabled = true;
+      const filename = `${sanitize(host)}.${ext}`;
       chrome.runtime.sendMessage({ type: "DOWNLOAD_DIRECT", url: v.url, filename }, (res) => {
-        btn.textContent = res && res.error ? "Erreur" : "OK";
+        card.btn.textContent = res && res.error ? "Erreur" : "OK";
       });
     });
-    item.appendChild(btn);
-    listEl.appendChild(item);
+    listEl.appendChild(card.root);
   });
 
   data.hls.forEach((v) => {
-    const item = document.createElement("div");
-    item.className = "item";
-    item.innerHTML = `
-      <div class="item-info">
-        <span class="item-title">Stream HLS</span>
-        <span class="item-meta">Chargement des qualités...</span>
-      </div>
-    `;
-    listEl.appendChild(item);
-    chrome.runtime.sendMessage({ type: "PARSE_HLS", url: v.url }, (result) => {
-      renderHlsItem(item, v, result, tab, data);
-    });
-  });
-}
+    const card = buildCard({ thumbnail: v.thumbnail || data.poster, badge: "HLS", title: `${host}.ts` });
+    listEl.appendChild(card.root);
 
-function renderHlsItem(item, v, result, tab, data) {
-  if (result.error) {
-    item.innerHTML = `<div class="item-info"><span class="item-title">Stream HLS</span><span class="item-meta">Erreur: ${result.error}</span></div>`;
-    return;
-  }
-  const variants = result.master ? result.variants : [{ url: v.url }];
-  item.innerHTML = `<div class="item-info"><span class="item-title">Stream HLS</span></div>`;
-  variants.forEach((variant) => {
-    const row = document.createElement("div");
-    row.className = "variant-row";
-    const label = variant.resolution || (variant.bandwidth ? `${Math.round(variant.bandwidth / 1000)} kbps` : "Qualité unique");
-    const labelEl = document.createElement("span");
-    labelEl.textContent = label;
-    const btn = document.createElement("button");
-    btn.className = "download-btn";
-    btn.textContent = "Télécharger";
-    btn.dataset.url = variant.url;
-    btn.addEventListener("click", () => {
-      btn.disabled = true;
-      btn.textContent = "...";
-      const filename = `${sanitize(data.title || tab.title)}.ts`;
-      chrome.runtime.sendMessage({ type: "DOWNLOAD_HLS", url: variant.url, filename }, (res) => {
-        btn.textContent = res && res.error ? "Erreur" : "OK";
+    const useVariants = (variants) => {
+      card.meta.textContent = "";
+      card.select.hidden = false;
+      card.select.innerHTML = variants
+        .map(
+          (variant, i) =>
+            `<option value="${i}">${variant.resolution || (variant.bandwidth ? Math.round(variant.bandwidth / 1000) + " kbps" : "Qualité unique")}</option>`
+        )
+        .join("");
+      card.btn.disabled = false;
+      card.btn.addEventListener("click", () => {
+        const variant = variants[Number(card.select.value)];
+        card.btn.disabled = true;
+        card.btn.textContent = "...";
+        downloadUrlByBtn.set(card.btn, variant.url);
+        const filename = `${sanitize(host)}.ts`;
+        chrome.runtime.sendMessage({ type: "DOWNLOAD_HLS", url: variant.url, filename }, (res) => {
+          card.btn.textContent = res && res.error ? "Erreur" : "OK";
+        });
       });
-    });
-    row.appendChild(labelEl);
-    row.appendChild(btn);
-    item.appendChild(row);
+    };
+
+    if (v.master && v.variants) {
+      useVariants(v.variants);
+    } else {
+      card.meta.textContent = "Chargement des qualités...";
+      card.btn.disabled = true;
+      chrome.runtime.sendMessage({ type: "PARSE_HLS", url: v.url }, (result) => {
+        if (result.error) {
+          card.meta.textContent = "Erreur: " + result.error;
+          return;
+        }
+        useVariants(result.master ? result.variants : [{ url: v.url }]);
+      });
+    }
   });
 }
 
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === "HLS_PROGRESS") {
-    const btn = document.querySelector(`.download-btn[data-url="${CSS.escape(message.url)}"]`);
-    if (btn) btn.textContent = `${message.done}/${message.total}`;
-  }
+  if (message.type !== "HLS_PROGRESS") return;
+  document.querySelectorAll(".download-btn").forEach((btn) => {
+    if (downloadUrlByBtn.get(btn) === message.url) {
+      btn.textContent = `${message.done}/${message.total}`;
+    }
+  });
 });
 
 init();
