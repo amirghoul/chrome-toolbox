@@ -6,6 +6,17 @@ function classify(url) {
   return { url, kind: "direct" };
 }
 
+function extractVjsPoster(video) {
+  // video.js doesn't use the native <video poster>; it renders its own
+  // cover image as a background-image on a sibling .vjs-poster div.
+  const container = video.closest(".video-js") || video.parentElement;
+  const posterEl = container && container.querySelector(".vjs-poster");
+  if (!posterEl) return null;
+  const bg = posterEl.style.backgroundImage || getComputedStyle(posterEl).backgroundImage;
+  const match = bg && bg.match(/url\(["']?(.*?)["']?\)/);
+  return match ? match[1] : null;
+}
+
 function captureThumbnail(video) {
   try {
     if (video.readyState < 2 || !video.videoWidth) return null;
@@ -35,8 +46,9 @@ function collectVideos() {
 
   videoTags.forEach((video) => {
     attachListeners(video);
-    if (video.poster && !pagePoster) pagePoster = video.poster;
-    const thumbnail = video.poster || captureThumbnail(video);
+    const vjsPoster = extractVjsPoster(video);
+    if ((video.poster || vjsPoster) && !pagePoster) pagePoster = video.poster || vjsPoster;
+    const thumbnail = video.poster || vjsPoster || captureThumbnail(video);
 
     const srcs = new Set();
     if (video.currentSrc) srcs.add(video.currentSrc);
