@@ -94,6 +94,9 @@ function ensureHlsClassified(tabId, frameId, url) {
       item.master = !!result.master;
       if (result.master) item.variants = result.variants;
       console.log(LOG, `classification HLS OK (${result.master ? "master" : "media"}) :`, url);
+      if (result.master && result.variants.length && !item.thumbnail) {
+        ensureHlsThumbnail(tabId, frameId, url, result.variants);
+      }
     })
     .catch((e) => {
       console.log(LOG, "ERREUR classification HLS échouée :", url, "-", e.message);
@@ -102,16 +105,46 @@ function ensureHlsClassified(tabId, frameId, url) {
     });
 }
 
+const hlsThumbnailing = new Set();
+
+function clearHlsThumbnailing(tabId) {
+  const prefix = `${tabId}:`;
+  for (const key of hlsThumbnailing) {
+    if (key.startsWith(prefix)) hlsThumbnailing.delete(key);
+  }
+}
+
+// Best-effort: grab a poster-like thumbnail by decrypting just the first
+// segment of the smallest quality (fast/cheap) and letting the browser try
+// to decode it in a hidden <video>. May not work — a lone .ts segment isn't
+// always independently decodable outside a full HLS/MSE pipeline.
+function ensureHlsThumbnail(tabId, frameId, masterUrl, variants) {
+  const key = `${tabId}:${masterUrl}`;
+  if (hlsThumbnailing.has(key)) return;
+  hlsThumbnailing.add(key);
+  const smallest = variants.reduce((min, v) => ((v.bandwidth || Infinity) < (min.bandwidth || Infinity) ? v : min));
+  console.log(LOG, "tentative de miniature via 1er segment de", smallest.url);
+  sendToFrame(tabId, frameId, { type: "FETCH_HLS_THUMBNAIL_IN_FRAME", url: smallest.url })
+    .then(({ thumbnail }) => {
+      const item = getTabEntry(tabId).hls.get(masterUrl);
+      if (item && thumbnail) item.thumbnail = thumbnail;
+      console.log(LOG, "miniature via segment :", thumbnail ? "OK" : "vide");
+    })
+    .catch((e) => console.log(LOG, "ERREUR miniature via segment échouée :", e.message));
+}
+
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId === 0) {
     tabData.set(details.tabId, { direct: new Map(), hls: new Map(), title: "", poster: null });
     clearHlsClassifying(details.tabId);
+    clearHlsThumbnailing(details.tabId);
   }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabData.delete(tabId);
   clearHlsClassifying(tabId);
+  clearHlsThumbnailing(tabId);
 });
 
 chrome.webRequest.onHeadersReceived.addListener(
