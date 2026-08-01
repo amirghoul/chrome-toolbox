@@ -7,11 +7,17 @@ function classify(url) {
 }
 
 function extractVjsPoster(video) {
-  // video.js doesn't use the native <video poster>; it renders its own
-  // cover image as a background-image on a sibling .vjs-poster div.
+  // video.js doesn't use the native <video poster>; depending on version it
+  // renders its own cover image either as a background-image on a sibling
+  // .vjs-poster div, or as an <img> nested inside it.
   const container = video.closest(".video-js") || video.parentElement;
   const posterEl = container && container.querySelector(".vjs-poster");
+  console.log(LOG, "DEBUG .vjs-poster :", posterEl ? posterEl.outerHTML.slice(0, 300) : "introuvable (container trouvé=" + !!container + ")");
   if (!posterEl) return null;
+
+  const img = posterEl.querySelector("img");
+  if (img && img.src) return img.src;
+
   const bg = posterEl.style.backgroundImage || getComputedStyle(posterEl).backgroundImage;
   const match = bg && bg.match(/url\(["']?(.*?)["']?\)/);
   return match ? match[1] : null;
