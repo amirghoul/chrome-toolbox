@@ -124,6 +124,7 @@ function triggerBlobDownload(blob, filename) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log(LOG, `message reçu "${message.type}" dans cette frame (${location.href})`, message);
   if (message.type === "FETCH_TEXT_IN_FRAME") {
     fetchOk(message.url)
       .then((res) => res.text())

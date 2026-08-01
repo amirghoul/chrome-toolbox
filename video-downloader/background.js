@@ -33,8 +33,10 @@ function classify(url, contentType) {
 // running in the *frame that actually requested the video* to do the fetch,
 // so it's indistinguishable from a request made by the real player.
 function sendToFrame(tabId, frameId, message) {
+  console.log(LOG, `sendToFrame [tab ${tabId}, frame ${frameId}] :`, message);
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, { frameId }, (response) => {
+      console.log(LOG, `sendToFrame [tab ${tabId}, frame ${frameId}] réponse :`, response, "lastError:", chrome.runtime.lastError?.message);
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
@@ -139,6 +141,7 @@ chrome.webRequest.onHeadersReceived.addListener(
 );
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log(LOG, `message reçu "${message.type}" de`, sender.url || sender.tab?.url, "frameId:", sender.frameId);
   switch (message.type) {
     case "FOUND_VIDEOS": {
       const tabId = sender.tab?.id;

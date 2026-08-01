@@ -1,3 +1,7 @@
+const LOG = "[VD]";
+console.log(LOG, "popup ouvert");
+window.addEventListener("error", (e) => console.error(LOG, "erreur non catchée dans le popup :", e.message, e.error));
+
 const listEl = document.getElementById("list");
 const statusEl = document.getElementById("status");
 const downloadUrlByBtn = new WeakMap();
@@ -52,7 +56,11 @@ function buildCard({ thumbnail, badge, title }) {
 
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  chrome.runtime.sendMessage({ type: "GET_VIDEOS", tabId: tab.id }, (data) => render(tab, data));
+  console.log(LOG, "onglet actif :", tab.id, tab.url);
+  chrome.runtime.sendMessage({ type: "GET_VIDEOS", tabId: tab.id }, (data) => {
+    console.log(LOG, "GET_VIDEOS réponse :", data);
+    render(tab, data);
+  });
 }
 
 function render(tab, data) {
@@ -92,30 +100,44 @@ function render(tab, data) {
         .join("");
       card.btn.disabled = false;
       card.btn.addEventListener("click", () => {
-        const variant = variants[Number(card.select.value)];
-        card.btn.disabled = true;
-        card.btn.textContent = "...";
-        downloadUrlByBtn.set(card.btn, variant.url);
-        const filename = `${sanitize(host)}.ts`;
-        chrome.runtime.sendMessage(
-          { type: "DOWNLOAD_HLS", url: variant.url, filename, tabId: tab.id, frameId: v.frameId },
-          (res) => {
+        console.log(LOG, "clic Télécharger (HLS), select.value =", card.select.value, "variants =", variants);
+        try {
+          const variant = variants[Number(card.select.value)];
+          if (!variant) {
+            console.error(LOG, "aucun variant trouvé pour l'index", card.select.value);
+            card.btn.textContent = "Erreur";
+            return;
+          }
+          card.btn.disabled = true;
+          card.btn.textContent = "...";
+          downloadUrlByBtn.set(card.btn, variant.url);
+          const filename = `${sanitize(host)}.ts`;
+          const msg = { type: "DOWNLOAD_HLS", url: variant.url, filename, tabId: tab.id, frameId: v.frameId };
+          console.log(LOG, "envoi DOWNLOAD_HLS :", msg);
+          chrome.runtime.sendMessage(msg, (res) => {
+            console.log(LOG, "réponse DOWNLOAD_HLS :", res, chrome.runtime.lastError);
             const failed = !res || res.error;
             card.btn.textContent = failed ? "Erreur" : "OK";
             card.btn.disabled = !failed;
-          }
-        );
+          });
+        } catch (e) {
+          console.error(LOG, "exception dans le clic Télécharger :", e);
+          card.btn.textContent = "Erreur";
+        }
       });
     };
 
     if (v.master && v.variants) {
+      console.log(LOG, "HLS déjà classifié, variants en cache :", v.variants);
       useVariants(v.variants);
     } else {
       card.meta.textContent = "Chargement des qualités...";
       card.btn.disabled = true;
+      console.log(LOG, "envoi PARSE_HLS pour", v.url, "frameId =", v.frameId);
       chrome.runtime.sendMessage({ type: "PARSE_HLS", url: v.url, tabId: tab.id, frameId: v.frameId }, (result) => {
-        if (result.error) {
-          card.meta.textContent = "Erreur: " + result.error;
+        console.log(LOG, "réponse PARSE_HLS :", result, chrome.runtime.lastError);
+        if (!result || result.error) {
+          card.meta.textContent = "Erreur: " + (result?.error || "pas de réponse");
           return;
         }
         useVariants(result.master ? result.variants : [{ url: v.url }]);
@@ -126,11 +148,14 @@ function render(tab, data) {
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type !== "HLS_PROGRESS") return;
+  console.log(LOG, "HLS_PROGRESS reçu :", message);
   document.querySelectorAll(".download-btn").forEach((btn) => {
     if (downloadUrlByBtn.get(btn) === message.url) {
       btn.textContent = `${message.done}/${message.total}`;
     }
   });
 });
+
+window.addEventListener("pagehide", () => console.log(LOG, "popup fermé (pagehide)"));
 
 init();
