@@ -26,6 +26,13 @@ function classify(url, contentType) {
 
 const hlsClassifying = new Set();
 
+function clearHlsClassifying(tabId) {
+  const prefix = `${tabId}:`;
+  for (const key of hlsClassifying) {
+    if (key.startsWith(prefix)) hlsClassifying.delete(key);
+  }
+}
+
 function ensureHlsClassified(tabId, url) {
   const key = `${tabId}:${url}`;
   if (hlsClassifying.has(key)) return;
@@ -46,10 +53,14 @@ function ensureHlsClassified(tabId, url) {
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId === 0) {
     tabData.set(details.tabId, { direct: new Map(), hls: new Map(), title: "", poster: null });
+    clearHlsClassifying(details.tabId);
   }
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => tabData.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  tabData.delete(tabId);
+  clearHlsClassifying(tabId);
+});
 
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
@@ -72,7 +83,7 @@ chrome.webRequest.onHeadersReceived.addListener(
       ensureHlsClassified(details.tabId, details.url);
     }
   },
-  { urls: ["<all_urls>"] },
+  { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "object", "other"] },
   ["responseHeaders"]
 );
 
@@ -102,6 +113,29 @@ async function parseHlsPlaylist(url) {
   return { master: true, variants };
 }
 
+const HLS_FETCH_CONCURRENCY = 5;
+
+async function fetchSegmentsInOrder(urls, onProgress) {
+  const parts = new Array(urls.length);
+  let nextIndex = 0;
+  let completed = 0;
+
+  async function worker() {
+    while (nextIndex < urls.length) {
+      const i = nextIndex++;
+      const res = await fetch(urls[i]);
+      if (!res.ok) throw new Error(`segment ${i + 1} : HTTP ${res.status}`);
+      parts[i] = await res.arrayBuffer();
+      completed++;
+      onProgress(completed, urls.length);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(HLS_FETCH_CONCURRENCY, urls.length) }, worker);
+  await Promise.all(workers);
+  return parts;
+}
+
 async function downloadHlsVariant(variantUrl, filename, onProgress) {
   const res = await fetch(variantUrl);
   const text = await res.text();
@@ -116,12 +150,7 @@ async function downloadHlsVariant(variantUrl, filename, onProgress) {
 
   if (!segmentUrls.length) throw new Error("aucun segment trouvé");
 
-  const parts = [];
-  for (let i = 0; i < segmentUrls.length; i++) {
-    const segRes = await fetch(segmentUrls[i]);
-    parts.push(await segRes.arrayBuffer());
-    onProgress(i + 1, segmentUrls.length);
-  }
+  const parts = await fetchSegmentsInOrder(segmentUrls, onProgress);
 
   const blob = new Blob(parts, { type: "video/mp2t" });
   const blobUrl = URL.createObjectURL(blob);

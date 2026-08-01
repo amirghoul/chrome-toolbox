@@ -69,7 +69,9 @@ function render(tab, data) {
       card.btn.disabled = true;
       const filename = `${sanitize(host)}.${ext}`;
       chrome.runtime.sendMessage({ type: "DOWNLOAD_DIRECT", url: v.url, filename }, (res) => {
-        card.btn.textContent = res && res.error ? "Erreur" : "OK";
+        const failed = !res || res.error;
+        card.btn.textContent = failed ? "Erreur" : "OK";
+        card.btn.disabled = !failed;
       });
     });
     listEl.appendChild(card.root);
@@ -96,7 +98,9 @@ function render(tab, data) {
         downloadUrlByBtn.set(card.btn, variant.url);
         const filename = `${sanitize(host)}.ts`;
         chrome.runtime.sendMessage({ type: "DOWNLOAD_HLS", url: variant.url, filename }, (res) => {
-          card.btn.textContent = res && res.error ? "Erreur" : "OK";
+          const failed = !res || res.error;
+          card.btn.textContent = failed ? "Erreur" : "OK";
+          card.btn.disabled = !failed;
         });
       });
     };

@@ -52,5 +52,15 @@ function collectVideos() {
   }
 }
 
+let collectScheduled = false;
+function scheduleCollect() {
+  if (collectScheduled) return;
+  collectScheduled = true;
+  setTimeout(() => {
+    collectScheduled = false;
+    collectVideos();
+  }, 500);
+}
+
 collectVideos();
-new MutationObserver(() => collectVideos()).observe(document.body, { childList: true, subtree: true });
+new MutationObserver(scheduleCollect).observe(document.body, { childList: true, subtree: true });

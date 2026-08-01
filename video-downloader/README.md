@@ -10,14 +10,14 @@ Détecte les vidéos présentes sur une page (fichiers directs mp4/webm et flux 
 
 ## Fonctionnement
 
-- Un content script détecte les balises `<video>`/`<source>` de la page.
-- Le service worker écoute aussi les requêtes réseau pour repérer les fichiers vidéo et manifests HLS chargés dynamiquement.
-- Pour un flux HLS, le manifest est analysé pour lister les qualités disponibles (résolution/bitrate).
-- Le téléchargement d'un flux HLS récupère et assemble les segments en un seul fichier `.ts`.
+- Un content script détecte les balises `<video>`/`<source>` de la page et capture une miniature (poster de la vidéo, ou une frame via `<canvas>` si aucun poster n'est défini).
+- Le service worker écoute aussi les requêtes réseau (types `media`/`xmlhttprequest`/`object`/`other`) pour repérer les fichiers vidéo et manifests HLS chargés dynamiquement — nécessaire car la plupart des lecteurs modernes chargent la vidéo dans `<video>` via une URL `blob:` (MediaSource) qui n'est pas exploitable directement.
+- Chaque manifest HLS détecté est analysé dès sa découverte ; seules les playlists "master" (qui listent toutes les qualités) sont affichées dans le popup, pour éviter d'afficher séparément chaque piste/qualité individuelle.
+- Le téléchargement d'un flux HLS récupère les segments (5 en parallèle) et les assemble en un seul fichier `.ts`.
 
 ## Limitations connues (v1)
 
 - Pas de support DASH (`.mpd`).
 - Pas de support des flux HLS chiffrés (`#EXT-X-KEY`).
-- Téléchargement des segments HLS séquentiel (peut être lent sur les vidéos longues).
-- Les vidéos jouées uniquement via `blob:` (MediaSource) ne sont détectées que si la requête réseau sous-jacente (segment/manifest) est capturée par le service worker.
+- Les segments HLS sont assemblés entièrement en mémoire avant le téléchargement — peut être lourd sur de très longues vidéos.
+- Si une page n'expose aucune playlist HLS "master" (rare, streams à qualité unique), les playlists individuelles détectées sont affichées telles quelles.
