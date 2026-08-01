@@ -12,7 +12,6 @@ function extractVjsPoster(video) {
   // .vjs-poster div, or as an <img> nested inside it.
   const container = video.closest(".video-js") || video.parentElement;
   const posterEl = container && container.querySelector(".vjs-poster");
-  console.log(LOG, "DEBUG .vjs-poster :", posterEl ? posterEl.outerHTML.slice(0, 300) : "introuvable (container trouvé=" + !!container + ")");
   if (!posterEl) return null;
 
   const img = posterEl.querySelector("img");
@@ -239,65 +238,6 @@ async function downloadHlsInThisFrame(variantUrl) {
   return new Blob(parts, { type: "video/mp2t" });
 }
 
-function loadHiddenVideo(blob) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(blob);
-    const video = document.createElement("video");
-    video.muted = true;
-    video.playsInline = true;
-    video.style.cssText = "position:fixed;left:-9999px;width:1px;height:1px;";
-
-    const timeoutId = setTimeout(() => {
-      cleanup();
-      reject(new Error("timeout décodage (segment probablement non lisible nativement)"));
-    }, 5000);
-    const cleanup = () => {
-      clearTimeout(timeoutId);
-      video.remove();
-      URL.revokeObjectURL(url);
-    };
-
-    video.addEventListener("loadeddata", () => resolve({ video, cleanup }), { once: true });
-    video.addEventListener(
-      "error",
-      () => {
-        cleanup();
-        reject(new Error("décodage impossible : " + (video.error?.message || "erreur inconnue")));
-      },
-      { once: true }
-    );
-
-    video.src = url;
-    document.body.appendChild(video);
-    video.play().catch(() => {});
-  });
-}
-
-async function extractThumbnailFromFirstSegment(variantUrl) {
-  const res = await fetchOk(variantUrl, "thumb-playlist");
-  const text = await res.text();
-  const segments = parseSegments(text, variantUrl);
-  if (!segments.length) throw new Error("aucun segment pour la miniature");
-
-  const seg = segments[0];
-  const r = await fetchOk(seg.url, "thumb-segment");
-  const raw = await r.arrayBuffer();
-  const decrypted = await decryptSegment(raw, seg.key);
-  const blob = new Blob([decrypted], { type: "video/mp2t" });
-
-  const { video, cleanup } = await loadHiddenVideo(blob);
-  try {
-    if (!video.videoWidth) throw new Error("dimensions vidéo indisponibles après décodage");
-    const canvas = document.createElement("canvas");
-    canvas.width = 160;
-    canvas.height = Math.max(1, Math.round(160 * (video.videoHeight / video.videoWidth)));
-    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.6);
-  } finally {
-    cleanup();
-  }
-}
-
 function triggerBlobDownload(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -316,19 +256,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then((res) => res.text())
       .then((text) => sendResponse({ text }))
       .catch((e) => sendResponse({ error: e.message }));
-    return true;
-  }
-  if (message.type === "FETCH_HLS_THUMBNAIL_IN_FRAME") {
-    console.log(LOG, "tentative de miniature via 1er segment :", message.url);
-    extractThumbnailFromFirstSegment(message.url)
-      .then((thumbnail) => {
-        console.log(LOG, "miniature via segment : OK");
-        sendResponse({ thumbnail });
-      })
-      .catch((e) => {
-        console.log(LOG, "ERREUR miniature via segment :", e.message);
-        sendResponse({ error: e.message });
-      });
     return true;
   }
   if (message.type === "DOWNLOAD_HLS_IN_FRAME") {

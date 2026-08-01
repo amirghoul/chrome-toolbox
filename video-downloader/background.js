@@ -94,8 +94,8 @@ function ensureHlsClassified(tabId, frameId, url) {
       item.master = !!result.master;
       if (result.master) item.variants = result.variants;
       console.log(LOG, `classification HLS OK (${result.master ? "master" : "media"}) :`, url);
-      if (result.master && result.variants.length && !item.thumbnail) {
-        ensureHlsThumbnail(tabId, frameId, url, result.variants);
+      if (result.master && !item.thumbnail) {
+        ensureVideoJsPoster(tabId, frameId, url);
       }
     })
     .catch((e) => {
@@ -114,23 +114,41 @@ function clearHlsThumbnailing(tabId) {
   }
 }
 
-// Best-effort: grab a poster-like thumbnail by decrypting just the first
-// segment of the smallest quality (fast/cheap) and letting the browser try
-// to decode it in a hidden <video>. May not work — a lone .ts segment isn't
-// always independently decodable outside a full HLS/MSE pipeline.
-function ensureHlsThumbnail(tabId, frameId, masterUrl, variants) {
+// video.js keeps the poster URL in its player instance (accessible via the
+// public player.poster() API) even after the DOM .vjs-poster element has
+// been cleared/hidden once playback starts. Content scripts run in an
+// isolated JS world and can't see the page's `window.videojs`, so this has
+// to be injected to run in the page's own (MAIN world) context instead.
+function ensureVideoJsPoster(tabId, frameId, masterUrl) {
   const key = `${tabId}:${masterUrl}`;
   if (hlsThumbnailing.has(key)) return;
   hlsThumbnailing.add(key);
-  const smallest = variants.reduce((min, v) => ((v.bandwidth || Infinity) < (min.bandwidth || Infinity) ? v : min));
-  console.log(LOG, "tentative de miniature via 1er segment de", smallest.url);
-  sendToFrame(tabId, frameId, { type: "FETCH_HLS_THUMBNAIL_IN_FRAME", url: smallest.url })
-    .then(({ thumbnail }) => {
-      const item = getTabEntry(tabId).hls.get(masterUrl);
-      if (item && thumbnail) item.thumbnail = thumbnail;
-      console.log(LOG, "miniature via segment :", thumbnail ? "OK" : "vide");
+  chrome.scripting
+    .executeScript({
+      target: { tabId, frameIds: [frameId] },
+      world: "MAIN",
+      func: () => {
+        try {
+          const vjs = window.videojs;
+          if (!vjs || !vjs.getPlayer) return { error: "videojs introuvable dans window" };
+          for (const el of document.querySelectorAll(".video-js")) {
+            const player = vjs.getPlayer(el);
+            const url = player && typeof player.poster === "function" ? player.poster() : null;
+            if (url) return { poster: new URL(url, location.href).href };
+          }
+          return { error: "aucun player.poster() non vide" };
+        } catch (e) {
+          return { error: e.message };
+        }
+      },
     })
-    .catch((e) => console.log(LOG, "ERREUR miniature via segment échouée :", e.message));
+    .then((results) => {
+      const result = results && results[0] && results[0].result;
+      console.log(LOG, "ensureVideoJsPoster résultat :", result);
+      const item = getTabEntry(tabId).hls.get(masterUrl);
+      if (item && result && result.poster) item.thumbnail = result.poster;
+    })
+    .catch((e) => console.log(LOG, "ERREUR ensureVideoJsPoster :", e.message));
 }
 
 chrome.webNavigation.onCommitted.addListener((details) => {

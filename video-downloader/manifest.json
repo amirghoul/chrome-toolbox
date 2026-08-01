@@ -3,7 +3,7 @@
   "name": "Video Downloader",
   "version": "1.0.0",
   "description": "Détecte les vidéos d'une page (fichiers directs et flux HLS) et les télécharge avec choix de qualité.",
-  "permissions": ["downloads", "webRequest", "webNavigation", "tabs"],
+  "permissions": ["downloads", "webRequest", "webNavigation", "tabs", "scripting"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
