@@ -1,3 +1,6 @@
+const LOG = "[VD]";
+console.log(LOG, "service worker démarré");
+
 const tabData = new Map();
 const DIRECT_EXT = new Set(["mp4", "webm", "mov", "m4v", "ogv"]);
 const DIRECT_CONTENT_TYPES = ["video/mp4", "video/webm", "video/quicktime", "video/x-m4v"];
@@ -70,6 +73,7 @@ chrome.webRequest.onHeadersReceived.addListener(
     const contentLength = headers.find((h) => h.name.toLowerCase() === "content-length")?.value;
     const kind = classify(details.url, contentType);
     if (!kind) return;
+    console.log(LOG, `réseau [tab ${details.tabId}] ${kind} (${contentType || "?"}, ${contentLength || "?"} o) :`, details.url);
     const entry = getTabEntry(details.tabId);
     if (kind === "direct") {
       if (!entry.direct.has(details.url)) {
@@ -179,6 +183,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "FOUND_VIDEOS": {
       const tabId = sender.tab?.id;
       if (tabId == null) return;
+      console.log(LOG, `FOUND_VIDEOS [tab ${tabId}] depuis ${sender.url} :`, message.videos, "poster:", !!message.poster);
       const entry = getTabEntry(tabId);
       if (message.title) entry.title = message.title;
       if (message.poster && !entry.poster) entry.poster = message.poster;
@@ -201,6 +206,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const hlsList = Array.from(entry.hls.values());
       const masters = hlsList.filter((e) => e.master === true);
       const hls = masters.length ? masters : hlsList.filter((e) => e.master !== false);
+      console.log(LOG, `GET_VIDEOS [tab ${message.tabId}] : ${entry.direct.size} direct(s), ${hlsList.length} hls total (${hls.length} retourné(s))`);
       sendResponse({
         title: entry.title,
         poster: entry.poster,

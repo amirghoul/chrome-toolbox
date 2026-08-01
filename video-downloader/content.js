@@ -1,3 +1,4 @@
+const LOG = "[VD]";
 const observedVideos = new WeakSet();
 
 function classify(url) {
@@ -14,6 +15,7 @@ function captureThumbnail(video) {
     canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", 0.6);
   } catch (e) {
+    console.warn(LOG, "capture miniature échouée (probablement CORS)", e.message);
     return null;
   }
 }
@@ -27,10 +29,11 @@ function attachListeners(video) {
 }
 
 function collectVideos() {
+  const videoTags = document.querySelectorAll("video");
   const found = [];
   let pagePoster = null;
 
-  document.querySelectorAll("video").forEach((video) => {
+  videoTags.forEach((video) => {
     attachListeners(video);
     if (video.poster && !pagePoster) pagePoster = video.poster;
     const thumbnail = video.poster || captureThumbnail(video);
@@ -47,8 +50,16 @@ function collectVideos() {
     });
   });
 
+  console.log(
+    LOG,
+    `scan (${window === window.top ? "top" : "iframe"} ${location.hostname}) : ${videoTags.length} balise(s) <video>, ${found.length} src exploitable(s), poster=${!!pagePoster}`
+  );
+
   if (found.length || pagePoster) {
-    chrome.runtime.sendMessage({ type: "FOUND_VIDEOS", videos: found, title: document.title, poster: pagePoster }).catch(() => {});
+    chrome.runtime
+      .sendMessage({ type: "FOUND_VIDEOS", videos: found, title: document.title, poster: pagePoster })
+      .then(() => console.log(LOG, "envoyé au background :", found))
+      .catch((e) => console.warn(LOG, "échec sendMessage (service worker inactif ?)", e));
   }
 }
 
@@ -62,5 +73,6 @@ function scheduleCollect() {
   }, 500);
 }
 
+console.log(LOG, "content script chargé sur", location.href, window === window.top ? "(frame principale)" : "(iframe)");
 collectVideos();
 new MutationObserver(scheduleCollect).observe(document.body, { childList: true, subtree: true });
