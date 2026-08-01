@@ -22,16 +22,32 @@ function extractVjsPoster(video) {
   return match ? match[1] : null;
 }
 
+// A successful capture is reused for the rest of the document's life: this
+// page mutates constantly, and re-encoding a JPEG (and re-sending it over
+// messaging) on every mutation would be pure waste.
+let cachedFrame = null;
+let lastNotReadyLog = null;
+
 function captureThumbnail(video) {
+  if (cachedFrame) return cachedFrame;
   try {
-    if (video.readyState < 2 || !video.videoWidth) return null;
+    if (video.readyState < 2 || !video.videoWidth) {
+      const state = `${video.readyState}/${video.videoWidth}`;
+      if (state !== lastNotReadyLog) {
+        lastNotReadyLog = state;
+        console.log(LOG, `capture frame pas encore possible (readyState=${video.readyState}, videoWidth=${video.videoWidth})`);
+      }
+      return null;
+    }
     const canvas = document.createElement("canvas");
     canvas.width = 160;
     canvas.height = Math.max(1, Math.round(160 * (video.videoHeight / video.videoWidth)));
     canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.6);
+    cachedFrame = canvas.toDataURL("image/jpeg", 0.6);
+    console.log(LOG, `capture frame OK (${video.videoWidth}x${video.videoHeight}, ${(cachedFrame.length / 1024).toFixed(0)} Ko en base64)`);
+    return cachedFrame;
   } catch (e) {
-    console.log(LOG, "ERREUR capture miniature échouée (probablement CORS)", e.message);
+    console.log(LOG, "ERREUR capture frame échouée (canvas tainted ?) :", e.message);
     return null;
   }
 }
@@ -49,6 +65,8 @@ function attachListeners(video) {
   );
 }
 
+let lastSentSignature = null;
+
 function collectVideos() {
   const videoTags = document.querySelectorAll("video");
   const found = [];
@@ -56,9 +74,13 @@ function collectVideos() {
 
   videoTags.forEach((video) => {
     attachListeners(video);
-    const vjsPoster = extractVjsPoster(video);
-    if ((video.poster || vjsPoster) && !pagePoster) pagePoster = video.poster || vjsPoster;
-    const thumbnail = video.poster || vjsPoster || captureThumbnail(video);
+    const declaredPoster = video.poster || extractVjsPoster(video);
+    // Players streaming through MediaSource only expose a blob: src, so the
+    // per-source loop below never runs for them and any thumbnail computed
+    // here would be dropped. Keep it as the page-level poster instead.
+    const frame = declaredPoster ? null : captureThumbnail(video);
+    const thumbnail = declaredPoster || frame;
+    if (thumbnail && !pagePoster) pagePoster = thumbnail;
 
     const srcs = new Set();
     if (video.currentSrc) srcs.add(video.currentSrc);
@@ -80,9 +102,17 @@ function collectVideos() {
   );
 
   if (found.length || pagePoster) {
+    // This page mutates constantly; skip the round trip when nothing changed.
+    // Compare the poster value itself, not just its presence: a captured
+    // frame arrives late and must still be sent even when an og:image
+    // placeholder was already reported.
+    const signature = JSON.stringify([found.map((v) => v.url), pagePoster, document.title]);
+    if (signature === lastSentSignature) return;
+    lastSentSignature = signature;
+
     chrome.runtime
       .sendMessage({ type: "FOUND_VIDEOS", videos: found, title: document.title, poster: pagePoster })
-      .then(() => console.log(LOG, "envoyé au background :", found))
+      .then(() => console.log(LOG, "envoyé au background :", found.length, "vidéo(s), poster=", !!pagePoster))
       .catch((e) => console.log(LOG, "ERREUR échec sendMessage (service worker inactif ?)", e));
   }
 }

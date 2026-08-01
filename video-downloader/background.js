@@ -149,7 +149,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log(LOG, `FOUND_VIDEOS [tab ${tabId}] depuis ${sender.url} :`, message.videos, "poster:", !!message.poster);
       const entry = getTabEntry(tabId);
       if (message.title) entry.title = message.title;
-      if (message.poster && !entry.poster) entry.poster = message.poster;
+      // A data: URL is a frame captured from the playing video — more
+      // representative than an og:image, and it arrives later, so let it
+      // replace whatever placeholder was reported first.
+      if (message.poster && (!entry.poster || message.poster.startsWith("data:"))) {
+        entry.poster = message.poster;
+      }
       message.videos.forEach((v) => {
         if (v.kind === "hls") {
           const existing = entry.hls.get(v.url) || { url: v.url, master: null, variants: null, frameId: sender.frameId };
