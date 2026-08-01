@@ -1,0 +1,62 @@
+body {
+  width: 340px;
+  font-family: -apple-system, system-ui, sans-serif;
+  font-size: 13px;
+  padding: 12px;
+  margin: 0;
+}
+
+h1 {
+  font-size: 15px;
+  margin: 0 0 8px;
+}
+
+#status {
+  color: #666;
+  margin-bottom: 10px;
+}
+
+.item {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.item-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.item-title {
+  font-weight: 600;
+}
+
+.item-meta {
+  color: #888;
+  font-size: 12px;
+}
+
+.variant-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.download-btn {
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.download-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
