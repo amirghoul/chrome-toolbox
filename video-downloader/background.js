@@ -36,18 +36,20 @@ function clearHlsClassifying(tabId) {
   }
 }
 
-function ensureHlsClassified(tabId, url) {
+function ensureHlsClassified(tabId, url, referrer) {
   const key = `${tabId}:${url}`;
   if (hlsClassifying.has(key)) return;
   hlsClassifying.add(key);
-  parseHlsPlaylist(url)
+  parseHlsPlaylist(url, referrer)
     .then((result) => {
       const item = getTabEntry(tabId).hls.get(url);
       if (!item) return;
       item.master = !!result.master;
       if (result.master) item.variants = result.variants;
+      console.log(LOG, `classification HLS OK (${result.master ? "master" : "media"}) :`, url);
     })
-    .catch(() => {
+    .catch((e) => {
+      console.warn(LOG, "classification HLS échouée (probablement 401/403 côté CDN) :", url, "-", e.message);
       const item = getTabEntry(tabId).hls.get(url);
       if (item) item.master = false;
     });
@@ -73,26 +75,36 @@ chrome.webRequest.onHeadersReceived.addListener(
     const contentLength = headers.find((h) => h.name.toLowerCase() === "content-length")?.value;
     const kind = classify(details.url, contentType);
     if (!kind) return;
-    console.log(LOG, `réseau [tab ${details.tabId}] ${kind} (${contentType || "?"}, ${contentLength || "?"} o) :`, details.url);
+    const referrer = details.documentUrl || details.initiator || undefined;
+    console.log(LOG, `réseau [tab ${details.tabId}] ${kind} (${contentType || "?"}, ${contentLength || "?"} o, referrer=${referrer || "?"}) :`, details.url);
     const entry = getTabEntry(details.tabId);
     if (kind === "direct") {
       if (!entry.direct.has(details.url)) {
         entry.direct.set(details.url, {
           url: details.url,
           size: contentLength ? parseInt(contentLength, 10) : null,
+          referrer,
         });
       }
     } else if (!entry.hls.has(details.url)) {
-      entry.hls.set(details.url, { url: details.url, master: null, variants: null });
-      ensureHlsClassified(details.tabId, details.url);
+      entry.hls.set(details.url, { url: details.url, master: null, variants: null, referrer });
+      ensureHlsClassified(details.tabId, details.url, referrer);
     }
   },
   { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "object", "other"] },
   ["responseHeaders"]
 );
 
-async function parseHlsPlaylist(url) {
-  const res = await fetch(url);
+function fetchWithReferrer(url, referrer) {
+  const init = referrer ? { referrer, referrerPolicy: "unsafe-url" } : {};
+  return fetch(url, init).then((res) => {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res;
+  });
+}
+
+async function parseHlsPlaylist(url, referrer) {
+  const res = await fetchWithReferrer(url, referrer);
   const text = await res.text();
   const lines = text.split(/\r?\n/);
   const isMaster = lines.some((l) => l.startsWith("#EXT-X-STREAM-INF"));
@@ -119,7 +131,7 @@ async function parseHlsPlaylist(url) {
 
 const HLS_FETCH_CONCURRENCY = 5;
 
-async function fetchSegmentsInOrder(urls, onProgress) {
+async function fetchSegmentsInOrder(urls, referrer, onProgress) {
   const parts = new Array(urls.length);
   let nextIndex = 0;
   let completed = 0;
@@ -127,8 +139,7 @@ async function fetchSegmentsInOrder(urls, onProgress) {
   async function worker() {
     while (nextIndex < urls.length) {
       const i = nextIndex++;
-      const res = await fetch(urls[i]);
-      if (!res.ok) throw new Error(`segment ${i + 1} : HTTP ${res.status}`);
+      const res = await fetchWithReferrer(urls[i], referrer);
       parts[i] = await res.arrayBuffer();
       completed++;
       onProgress(completed, urls.length);
@@ -140,8 +151,8 @@ async function fetchSegmentsInOrder(urls, onProgress) {
   return parts;
 }
 
-async function downloadHlsVariant(variantUrl, filename, onProgress) {
-  const res = await fetch(variantUrl);
+async function downloadHlsVariant(variantUrl, filename, referrer, onProgress) {
+  const res = await fetchWithReferrer(variantUrl, referrer);
   const text = await res.text();
   if (/#EXT-X-KEY/.test(text) && !/METHOD=NONE/.test(text)) {
     throw new Error("flux chiffré non supporté");
@@ -154,7 +165,7 @@ async function downloadHlsVariant(variantUrl, filename, onProgress) {
 
   if (!segmentUrls.length) throw new Error("aucun segment trouvé");
 
-  const parts = await fetchSegmentsInOrder(segmentUrls, onProgress);
+  const parts = await fetchSegmentsInOrder(segmentUrls, referrer, onProgress);
 
   const blob = new Blob(parts, { type: "video/mp2t" });
   const blobUrl = URL.createObjectURL(blob);
@@ -189,10 +200,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.poster && !entry.poster) entry.poster = message.poster;
       message.videos.forEach((v) => {
         if (v.kind === "hls") {
-          const existing = entry.hls.get(v.url) || { url: v.url, master: null, variants: null };
+          const existing = entry.hls.get(v.url) || { url: v.url, master: null, variants: null, referrer: sender.url };
           if (v.thumbnail) existing.thumbnail = v.thumbnail;
           entry.hls.set(v.url, existing);
-          if (existing.master === null) ensureHlsClassified(tabId, v.url);
+          if (existing.master === null) ensureHlsClassified(tabId, v.url, existing.referrer);
         } else {
           const existing = entry.direct.get(v.url) || { url: v.url, size: null };
           if (v.thumbnail) existing.thumbnail = v.thumbnail;
@@ -216,7 +227,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     case "PARSE_HLS": {
-      parseHlsPlaylist(message.url)
+      parseHlsPlaylist(message.url, message.referrer)
         .then(sendResponse)
         .catch((e) => sendResponse({ error: e.message }));
       return true;
@@ -228,9 +239,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     case "DOWNLOAD_HLS": {
-      downloadHlsVariant(message.url, message.filename, (done, total) => {
-        chrome.runtime.sendMessage({ type: "HLS_PROGRESS", url: message.url, done, total }).catch(() => {});
-      })
+      downloadHlsVariant(
+        message.url,
+        message.filename,
+        message.referrer,
+        (done, total) => {
+          chrome.runtime.sendMessage({ type: "HLS_PROGRESS", url: message.url, done, total }).catch(() => {});
+        }
+      )
         .then(() => sendResponse({ ok: true }))
         .catch((e) => sendResponse({ error: e.message }));
       return true;

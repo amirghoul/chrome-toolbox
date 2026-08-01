@@ -97,7 +97,7 @@ function render(tab, data) {
         card.btn.textContent = "...";
         downloadUrlByBtn.set(card.btn, variant.url);
         const filename = `${sanitize(host)}.ts`;
-        chrome.runtime.sendMessage({ type: "DOWNLOAD_HLS", url: variant.url, filename }, (res) => {
+        chrome.runtime.sendMessage({ type: "DOWNLOAD_HLS", url: variant.url, filename, referrer: v.referrer }, (res) => {
           const failed = !res || res.error;
           card.btn.textContent = failed ? "Erreur" : "OK";
           card.btn.disabled = !failed;
@@ -110,7 +110,7 @@ function render(tab, data) {
     } else {
       card.meta.textContent = "Chargement des qualités...";
       card.btn.disabled = true;
-      chrome.runtime.sendMessage({ type: "PARSE_HLS", url: v.url }, (result) => {
+      chrome.runtime.sendMessage({ type: "PARSE_HLS", url: v.url, referrer: v.referrer }, (result) => {
         if (result.error) {
           card.meta.textContent = "Erreur: " + result.error;
           return;
