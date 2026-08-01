@@ -13,7 +13,12 @@ const PLACEHOLDER_THUMB =
   );
 
 function sanitize(name) {
-  return (name || "video").replace(/[\\/:*?"<>|]+/g, "_").slice(0, 80);
+  return (
+    (name || "video")
+      .replace(/[^\p{L}\p{N}]+/gu, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 80) || "video"
+  );
 }
 
 function formatSize(bytes) {
@@ -68,6 +73,7 @@ function render(tab, data) {
   const total = data.direct.length + data.hls.length;
   statusEl.textContent = total ? `${total} vidéo(s) détectée(s)` : "Aucune vidéo détectée sur cette page";
   const host = hostname(tab.url);
+  const pageName = tab.title || host;
 
   data.direct.forEach((v) => {
     const ext = (v.url.split("?")[0].match(/\.([a-z0-9]+)$/i) || [, "mp4"])[1].toLowerCase();
@@ -75,7 +81,7 @@ function render(tab, data) {
     card.meta.textContent = formatSize(v.size);
     card.btn.addEventListener("click", () => {
       card.btn.disabled = true;
-      const filename = `${sanitize(host)}.${ext}`;
+      const filename = `${sanitize(pageName)}.${ext}`;
       chrome.runtime.sendMessage({ type: "DOWNLOAD_DIRECT", url: v.url, filename }, (res) => {
         const failed = !res || res.error;
         card.btn.textContent = failed ? "Erreur" : "OK";
@@ -111,7 +117,7 @@ function render(tab, data) {
           card.btn.disabled = true;
           card.btn.textContent = "...";
           downloadUrlByBtn.set(card.btn, variant.url);
-          const filename = `${sanitize(host)}.ts`;
+          const filename = `${sanitize(pageName)}.ts`;
           const msg = { type: "DOWNLOAD_HLS", url: variant.url, filename, tabId: tab.id, frameId: v.frameId };
           console.log(LOG, "envoi DOWNLOAD_HLS :", msg);
           chrome.runtime.sendMessage(msg, (res) => {
