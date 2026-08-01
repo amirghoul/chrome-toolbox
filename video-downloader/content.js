@@ -36,6 +36,11 @@ function captureThumbnail(video) {
   }
 }
 
+function getOgImage() {
+  const og = document.querySelector('meta[property="og:image"], meta[name="og:image"]');
+  return og ? og.content : null;
+}
+
 function attachListeners(video) {
   if (observedVideos.has(video)) return;
   observedVideos.add(video);
@@ -66,6 +71,8 @@ function collectVideos() {
       found.push({ ...classify(src), thumbnail });
     });
   });
+
+  if (!pagePoster) pagePoster = getOgImage();
 
   console.log(
     LOG,

@@ -94,9 +94,6 @@ function ensureHlsClassified(tabId, frameId, url) {
       item.master = !!result.master;
       if (result.master) item.variants = result.variants;
       console.log(LOG, `classification HLS OK (${result.master ? "master" : "media"}) :`, url);
-      if (result.master && !item.thumbnail) {
-        ensureVideoJsPoster(tabId, frameId, url);
-      }
     })
     .catch((e) => {
       console.log(LOG, "ERREUR classification HLS échouée :", url, "-", e.message);
@@ -105,64 +102,16 @@ function ensureHlsClassified(tabId, frameId, url) {
     });
 }
 
-const hlsThumbnailing = new Set();
-
-function clearHlsThumbnailing(tabId) {
-  const prefix = `${tabId}:`;
-  for (const key of hlsThumbnailing) {
-    if (key.startsWith(prefix)) hlsThumbnailing.delete(key);
-  }
-}
-
-// video.js keeps the poster URL in its player instance (accessible via the
-// public player.poster() API) even after the DOM .vjs-poster element has
-// been cleared/hidden once playback starts. Content scripts run in an
-// isolated JS world and can't see the page's `window.videojs`, so this has
-// to be injected to run in the page's own (MAIN world) context instead.
-function ensureVideoJsPoster(tabId, frameId, masterUrl) {
-  const key = `${tabId}:${masterUrl}`;
-  if (hlsThumbnailing.has(key)) return;
-  hlsThumbnailing.add(key);
-  chrome.scripting
-    .executeScript({
-      target: { tabId, frameIds: [frameId] },
-      world: "MAIN",
-      func: () => {
-        try {
-          const vjs = window.videojs;
-          if (!vjs || !vjs.getPlayer) return { error: "videojs introuvable dans window" };
-          for (const el of document.querySelectorAll(".video-js")) {
-            const player = vjs.getPlayer(el);
-            const url = player && typeof player.poster === "function" ? player.poster() : null;
-            if (url) return { poster: new URL(url, location.href).href };
-          }
-          return { error: "aucun player.poster() non vide" };
-        } catch (e) {
-          return { error: e.message };
-        }
-      },
-    })
-    .then((results) => {
-      const result = results && results[0] && results[0].result;
-      console.log(LOG, "ensureVideoJsPoster résultat :", result);
-      const item = getTabEntry(tabId).hls.get(masterUrl);
-      if (item && result && result.poster) item.thumbnail = result.poster;
-    })
-    .catch((e) => console.log(LOG, "ERREUR ensureVideoJsPoster :", e.message));
-}
-
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId === 0) {
     tabData.set(details.tabId, { direct: new Map(), hls: new Map(), title: "", poster: null });
     clearHlsClassifying(details.tabId);
-    clearHlsThumbnailing(details.tabId);
   }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabData.delete(tabId);
   clearHlsClassifying(tabId);
-  clearHlsThumbnailing(tabId);
 });
 
 chrome.webRequest.onHeadersReceived.addListener(
