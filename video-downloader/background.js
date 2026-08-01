@@ -27,6 +27,50 @@ function classify(url, contentType) {
   return null;
 }
 
+// Fetching HLS manifests/segments from the service worker fails on CDNs that
+// gate access behind Referer/cookie checks (e.g. Akamai token auth), because
+// a service-worker fetch carries neither. Instead we ask the content script
+// running in the *frame that actually requested the video* to do the fetch,
+// so it's indistinguishable from a request made by the real player.
+function sendToFrame(tabId, frameId, message) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.sendMessage(tabId, message, { frameId }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!response || response.error) {
+        reject(new Error(response?.error || "pas de réponse de la frame"));
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
+function parsePlaylistText(text, baseUrl) {
+  const lines = text.split(/\r?\n/);
+  const isMaster = lines.some((l) => l.startsWith("#EXT-X-STREAM-INF"));
+  if (!isMaster) return { master: false };
+
+  const variants = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith("#EXT-X-STREAM-INF")) continue;
+    const bandwidthMatch = lines[i].match(/BANDWIDTH=(\d+)/);
+    const resMatch = lines[i].match(/RESOLUTION=(\d+x\d+)/);
+    const uriLine = lines[i + 1];
+    if (uriLine && !uriLine.startsWith("#")) {
+      variants.push({
+        url: new URL(uriLine.trim(), baseUrl).href,
+        bandwidth: bandwidthMatch ? parseInt(bandwidthMatch[1], 10) : null,
+        resolution: resMatch ? resMatch[1] : null,
+      });
+    }
+  }
+  variants.sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0));
+  return { master: true, variants };
+}
+
 const hlsClassifying = new Set();
 
 function clearHlsClassifying(tabId) {
@@ -36,12 +80,13 @@ function clearHlsClassifying(tabId) {
   }
 }
 
-function ensureHlsClassified(tabId, url, referrer) {
+function ensureHlsClassified(tabId, frameId, url) {
   const key = `${tabId}:${url}`;
   if (hlsClassifying.has(key)) return;
   hlsClassifying.add(key);
-  parseHlsPlaylist(url, referrer)
-    .then((result) => {
+  sendToFrame(tabId, frameId, { type: "FETCH_TEXT_IN_FRAME", url })
+    .then(({ text }) => {
+      const result = parsePlaylistText(text, url);
       const item = getTabEntry(tabId).hls.get(url);
       if (!item) return;
       item.master = !!result.master;
@@ -49,7 +94,7 @@ function ensureHlsClassified(tabId, url, referrer) {
       console.log(LOG, `classification HLS OK (${result.master ? "master" : "media"}) :`, url);
     })
     .catch((e) => {
-      console.warn(LOG, "classification HLS échouée (probablement 401/403 côté CDN) :", url, "-", e.message);
+      console.warn(LOG, "classification HLS échouée :", url, "-", e.message);
       const item = getTabEntry(tabId).hls.get(url);
       if (item) item.master = false;
     });
@@ -75,119 +120,23 @@ chrome.webRequest.onHeadersReceived.addListener(
     const contentLength = headers.find((h) => h.name.toLowerCase() === "content-length")?.value;
     const kind = classify(details.url, contentType);
     if (!kind) return;
-    const referrer = details.documentUrl || details.initiator || undefined;
-    console.log(LOG, `réseau [tab ${details.tabId}] ${kind} (${contentType || "?"}, ${contentLength || "?"} o, referrer=${referrer || "?"}) :`, details.url);
+    console.log(LOG, `réseau [tab ${details.tabId}, frame ${details.frameId}] ${kind} (${contentType || "?"}, ${contentLength || "?"} o) :`, details.url);
     const entry = getTabEntry(details.tabId);
     if (kind === "direct") {
       if (!entry.direct.has(details.url)) {
         entry.direct.set(details.url, {
           url: details.url,
           size: contentLength ? parseInt(contentLength, 10) : null,
-          referrer,
         });
       }
     } else if (!entry.hls.has(details.url)) {
-      entry.hls.set(details.url, { url: details.url, master: null, variants: null, referrer });
-      ensureHlsClassified(details.tabId, details.url, referrer);
+      entry.hls.set(details.url, { url: details.url, master: null, variants: null, frameId: details.frameId });
+      ensureHlsClassified(details.tabId, details.frameId, details.url);
     }
   },
   { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "object", "other"] },
   ["responseHeaders"]
 );
-
-function fetchWithReferrer(url, referrer) {
-  const init = referrer ? { referrer, referrerPolicy: "unsafe-url" } : {};
-  return fetch(url, init).then((res) => {
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res;
-  });
-}
-
-async function parseHlsPlaylist(url, referrer) {
-  const res = await fetchWithReferrer(url, referrer);
-  const text = await res.text();
-  const lines = text.split(/\r?\n/);
-  const isMaster = lines.some((l) => l.startsWith("#EXT-X-STREAM-INF"));
-  if (!isMaster) {
-    return { master: false };
-  }
-  const variants = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (!lines[i].startsWith("#EXT-X-STREAM-INF")) continue;
-    const bandwidthMatch = lines[i].match(/BANDWIDTH=(\d+)/);
-    const resMatch = lines[i].match(/RESOLUTION=(\d+x\d+)/);
-    const uriLine = lines[i + 1];
-    if (uriLine && !uriLine.startsWith("#")) {
-      variants.push({
-        url: new URL(uriLine.trim(), url).href,
-        bandwidth: bandwidthMatch ? parseInt(bandwidthMatch[1], 10) : null,
-        resolution: resMatch ? resMatch[1] : null,
-      });
-    }
-  }
-  variants.sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0));
-  return { master: true, variants };
-}
-
-const HLS_FETCH_CONCURRENCY = 5;
-
-async function fetchSegmentsInOrder(urls, referrer, onProgress) {
-  const parts = new Array(urls.length);
-  let nextIndex = 0;
-  let completed = 0;
-
-  async function worker() {
-    while (nextIndex < urls.length) {
-      const i = nextIndex++;
-      const res = await fetchWithReferrer(urls[i], referrer);
-      parts[i] = await res.arrayBuffer();
-      completed++;
-      onProgress(completed, urls.length);
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(HLS_FETCH_CONCURRENCY, urls.length) }, worker);
-  await Promise.all(workers);
-  return parts;
-}
-
-async function downloadHlsVariant(variantUrl, filename, referrer, onProgress) {
-  const res = await fetchWithReferrer(variantUrl, referrer);
-  const text = await res.text();
-  if (/#EXT-X-KEY/.test(text) && !/METHOD=NONE/.test(text)) {
-    throw new Error("flux chiffré non supporté");
-  }
-  const segmentUrls = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("#"))
-    .map((l) => new URL(l, variantUrl).href);
-
-  if (!segmentUrls.length) throw new Error("aucun segment trouvé");
-
-  const parts = await fetchSegmentsInOrder(segmentUrls, referrer, onProgress);
-
-  const blob = new Blob(parts, { type: "video/mp2t" });
-  const blobUrl = URL.createObjectURL(blob);
-
-  return new Promise((resolve, reject) => {
-    chrome.downloads.download({ url: blobUrl, filename }, (downloadId) => {
-      if (chrome.runtime.lastError || !downloadId) {
-        URL.revokeObjectURL(blobUrl);
-        reject(new Error(chrome.runtime.lastError?.message || "échec du téléchargement"));
-        return;
-      }
-      const listener = (delta) => {
-        if (delta.id === downloadId && delta.state) {
-          chrome.downloads.onChanged.removeListener(listener);
-          URL.revokeObjectURL(blobUrl);
-          resolve(downloadId);
-        }
-      };
-      chrome.downloads.onChanged.addListener(listener);
-    });
-  });
-}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
@@ -200,10 +149,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.poster && !entry.poster) entry.poster = message.poster;
       message.videos.forEach((v) => {
         if (v.kind === "hls") {
-          const existing = entry.hls.get(v.url) || { url: v.url, master: null, variants: null, referrer: sender.url };
+          const existing = entry.hls.get(v.url) || { url: v.url, master: null, variants: null, frameId: sender.frameId };
           if (v.thumbnail) existing.thumbnail = v.thumbnail;
           entry.hls.set(v.url, existing);
-          if (existing.master === null) ensureHlsClassified(tabId, v.url, existing.referrer);
+          if (existing.master === null) ensureHlsClassified(tabId, existing.frameId, v.url);
         } else {
           const existing = entry.direct.get(v.url) || { url: v.url, size: null };
           if (v.thumbnail) existing.thumbnail = v.thumbnail;
@@ -227,8 +176,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     case "PARSE_HLS": {
-      parseHlsPlaylist(message.url, message.referrer)
-        .then(sendResponse)
+      sendToFrame(message.tabId, message.frameId, { type: "FETCH_TEXT_IN_FRAME", url: message.url })
+        .then(({ text }) => sendResponse(parsePlaylistText(text, message.url)))
         .catch((e) => sendResponse({ error: e.message }));
       return true;
     }
@@ -239,15 +188,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     case "DOWNLOAD_HLS": {
-      downloadHlsVariant(
-        message.url,
-        message.filename,
-        message.referrer,
-        (done, total) => {
-          chrome.runtime.sendMessage({ type: "HLS_PROGRESS", url: message.url, done, total }).catch(() => {});
-        }
-      )
-        .then(() => sendResponse({ ok: true }))
+      sendToFrame(message.tabId, message.frameId, { type: "DOWNLOAD_HLS_IN_FRAME", url: message.url })
+        .then(({ dataUrl }) => {
+          chrome.downloads.download({ url: dataUrl, filename: message.filename }, (downloadId) => {
+            if (chrome.runtime.lastError || !downloadId) {
+              sendResponse({ error: chrome.runtime.lastError?.message || "téléchargement échoué" });
+              return;
+            }
+            sendResponse({ ok: true });
+          });
+        })
         .catch((e) => sendResponse({ error: e.message }));
       return true;
     }

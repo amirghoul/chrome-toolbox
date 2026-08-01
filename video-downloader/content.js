@@ -73,6 +73,72 @@ function scheduleCollect() {
   }, 500);
 }
 
+async function fetchOk(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res;
+}
+
+const HLS_FRAME_FETCH_CONCURRENCY = 5;
+
+async function downloadHlsInThisFrame(variantUrl) {
+  const res = await fetchOk(variantUrl);
+  const text = await res.text();
+  if (/#EXT-X-KEY/.test(text) && !/METHOD=NONE/.test(text)) {
+    throw new Error("flux chiffré non supporté");
+  }
+  const segmentUrls = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"))
+    .map((l) => new URL(l, variantUrl).href);
+
+  if (!segmentUrls.length) throw new Error("aucun segment trouvé");
+
+  const parts = new Array(segmentUrls.length);
+  let nextIndex = 0;
+  let completed = 0;
+  async function worker() {
+    while (nextIndex < segmentUrls.length) {
+      const i = nextIndex++;
+      const r = await fetchOk(segmentUrls[i]);
+      parts[i] = await r.arrayBuffer();
+      completed++;
+      chrome.runtime.sendMessage({ type: "HLS_PROGRESS", url: variantUrl, done: completed, total: segmentUrls.length }).catch(() => {});
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(HLS_FRAME_FETCH_CONCURRENCY, segmentUrls.length) }, worker));
+
+  const blob = new Blob(parts, { type: "video/mp2t" });
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("conversion en data URL échouée"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "FETCH_TEXT_IN_FRAME") {
+    fetchOk(message.url)
+      .then((res) => res.text())
+      .then((text) => sendResponse({ text }))
+      .catch((e) => sendResponse({ error: e.message }));
+    return true;
+  }
+  if (message.type === "DOWNLOAD_HLS_IN_FRAME") {
+    console.log(LOG, "téléchargement HLS depuis cette frame :", message.url);
+    downloadHlsInThisFrame(message.url)
+      .then((dataUrl) => sendResponse({ dataUrl }))
+      .catch((e) => {
+        console.warn(LOG, "téléchargement HLS échoué dans la frame :", e.message);
+        sendResponse({ error: e.message });
+      });
+    return true;
+  }
+  return undefined;
+});
+
 console.log(LOG, "content script chargé sur", location.href, window === window.top ? "(frame principale)" : "(iframe)");
 collectVideos();
 new MutationObserver(scheduleCollect).observe(document.body, { childList: true, subtree: true });
