@@ -25,3 +25,22 @@ Détecte les vidéos présentes sur une page (fichiers directs mp4/webm et flux 
 - Si une page n'expose aucune playlist HLS "master" (rare, streams à qualité unique), les playlists individuelles détectées sont affichées telles quelles.
 - Si un CDN protège aussi via l'IP ou un cookie non accessible à l'extension, le téléchargement peut encore échouer (HTTP 401/403) malgré le relais par frame.
 - Si la frame d'origine a été déchargée entre-temps (navigation, lecture auto de la vidéo suivante), le relais échoue — il faut rouvrir le popup pour redétecter sur la frame actuelle.
+- Miniature indisponible pour certains lecteurs qui chargent la vidéo dans un `<video>` via MediaSource cross-origine (canvas "tainted", capture bloquée par le navigateur) : un placeholder générique s'affiche à la place, ce qui est attendu et pas un bug.
+
+## Compatibilité testée
+
+| Type de vidéo | Statut | Testé sur |
+|---|---|---|
+| Fichier direct non protégé (mp4/webm) | ✅ fonctionne | w3schools.com |
+| Flux HLS non chiffré, multi-qualité | ✅ fonctionne | Apple bipbop / Mux test streams |
+| Flux HLS chiffré AES-128 (segments `.ts`) | ✅ fonctionne | learn.cantrill.io (lecteur Hotmart) |
+| Flux DASH (`.mpd`) | ❌ non supporté | — |
+| HLS `SAMPLE-AES` (fMP4 chiffré) | ❌ non supporté | — |
+| Vidéo avec vraie DRM (Widevine/FairPlay) | ❌ hors scope | protection légale, volontairement pas contournée |
+| Remux en `.mp4` | ➖ non fait par choix | fichiers livrés en `.ts`, lisibles tels quels dans VLC/mpv |
+
+## Versions
+
+Les tags git `video-downloader-vX.Y.Z` marquent une version dont le fonctionnement de bout en bout (détection → sélection de qualité → téléchargement, y compris déchiffrement si besoin) a été vérifié manuellement sur au moins un site réel — pas de CI automatisée pour l'instant, donc un tag est la seule garantie qu'"à cet état précis, ça marchait".
+
+- `video-downloader-v1.0.0` — première version fonctionnelle de bout en bout : fichiers directs, HLS non chiffré et HLS AES-128 (voir tableau ci-dessus).
